@@ -1,0 +1,29 @@
+# Security scanning workflow
+
+name: Security
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sunday
+  push:
+    branches: [main]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -e ".[lint]"
+
+      - name: Run security lints
+        run: ruff check . --select=SEC
+
+      - name: Check dependencies
+        run: pip-audit || true

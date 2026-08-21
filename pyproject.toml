@@ -1,0 +1,236 @@
+[project]
+name = "quant_trading_bot"
+version = "0.1.0"
+description = "Production-grade quant crypto trading platform"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.12"
+authors = [
+    {name = "Quant Team", email = "team@example.com"}
+]
+keywords = ["crypto", "trading", "quant", "backtesting"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+
+# Core dependencies - intentionally minimal for foundation
+dependencies = [
+    # Web framework
+    "fastapi>=0.115.0,<1.0.0",
+    "uvicorn[standard]>=0.34.0,<1.0.0",
+
+    # Data validation and settings
+    "pydantic>=2.10.0,<3.0.0",
+    "pydantic-settings>=2.6.0,<3.0.0",
+
+    # Database
+    "sqlalchemy>=2.0.36,<3.0.0",
+    "alembic>=1.14.0,<2.0.0",
+    "asyncpg>=0.30.0,<1.0.0",  # PostgreSQL async driver
+
+    # Redis
+    "redis>=5.2.0,<6.0.0",
+
+    # Utilities
+    "structlog>=24.4.0,<25.0.0",
+    "tenacity>=9.0.0,<10.0.0",  # Retry logic
+    "cachetools>=5.5.0,<6.0.0",  # Caching utilities
+]
+
+# Optional dependencies for different features
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0,<9.0.0",
+    "pytest-asyncio>=0.24.0,<1.0.0",
+    "pytest-cov>=6.0.0,<7.0.0",
+    "pytest-mock>=3.14.0,<4.0.0",
+    "pytest-repeat>=0.9.3,<1.0.0",
+    "hypothesis>=6.115.0,<7.0.0",
+    "faker>=33.0.0,<34.0.0",
+]
+lint = [
+    "ruff>=0.8.0,<1.0.0",
+    "mypy>=1.14.0,<2.0.0",
+    "pre-commit>=4.0.0,<5.0.0",
+]
+# Exchange adapters - not installed by default
+binance = ["python-binance>=1.0.19,<2.0.0"]
+okx = ["okx-python-api>=1.0.0,<2.0.0"]
+# Backtesting extras
+backtest = [
+    "pandas>=2.2.0,<3.0.0",
+    "numpy>=2.0.0,<3.0.0",
+]
+
+# Entry points for CLI tools
+[project.scripts]
+backtest = "apps.backtest_cli.main:main"
+data-download = "apps.data_download_cli.main:main"
+data-checksum = "apps.data_checksum_cli.main:main"
+
+[project.urls]
+Homepage = "https://github.com/example/quant_trading_bot"
+Repository = "https://github.com/example/quant_trading_bot"
+Documentation = "https://quant-trading-bot.readthedocs.io"
+
+# Build system
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# =============================================================================
+# TOOL CONFIGURATIONS
+# =============================================================================
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+indent-width = 4
+
+[tool.ruff.lint]
+# Enable ruff rules
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "B",     # flake8-bugbear
+    "C4",    # flake8-comprehensions
+    "UP",    # pyupgrade
+    "RUF",   # Ruff-specific rules
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+    "RUF001", # ambiguous unicode characters
+    "B027",  # empty methods in ABCs are intentional optional hooks
+]
+
+# Exclude patterns
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-archive",
+    ".github",
+    ".gitignore",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "results",
+    "vendor",
+    "migrations/versions/*.py",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/**/*" = ["S101", "D", "ARG001"]
+"apps/backtest_cli/**/*" = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+follow_imports = "normal"
+ignore_missing_imports = false
+
+[tool.pytest.ini_options]
+minversion = "8.3"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--tb=short",
+    "--cov=packages",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-fail-under=0",
+]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "contract: marks tests as contract tests",
+    "replay: marks tests as replay tests",
+    "unit: marks tests as unit tests",
+    "property: marks tests as property-based tests",
+]
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["packages"]
+omit = [
+    "*/tests/*",
+    "*/migrations/*",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+    "@abstract",
+]
+show_missing = true
+skip_covered = false
+
+[tool.hatch.envs.default]
+dependencies = ["pytest", "pytest-cov", "pytest-mock", "faker"]
+
+[tool.hatch.envs.lint]
+dependencies = ["ruff", "mypy", "pre-commit"]
+scripts = [
+    "fmt = ruff format {args:.}",
+    "lint = ruff check {args:.}",
+    "typecheck = mypy {args:.}",
+    "all = ruff format . && ruff check . && mypy .",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["packages", "apps"]

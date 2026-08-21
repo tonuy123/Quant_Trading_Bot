@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "api-design": {
+      "version": "1.0.0",
+      "installedAt": "2026-08-17T13:21:13.679Z",
+      "platform": "codex",
+      "contentHash": "f399830b359dac8e251819e6be02e3387b852f9460b989cb2221166b870216e2"
+    },
+    "ci-cd": {
+      "version": "1.0.0",
+      "installedAt": "2026-08-17T13:21:36.450Z",
+      "platform": "codex",
+      "contentHash": "3f68eaf1f723d5762366c59938eeb951436f17a2f937b534381f74801c34d612"
+    },
+    "refactor": {
+      "version": "1.0.0",
+      "installedAt": "2026-08-17T13:22:27.639Z",
+      "platform": "codex",
+      "contentHash": "718bfd8d8a6b18d4894e23e98f1924d8cf3a09d3e67ca37bd7be0ba6c11847cf"
+    }
+  }
+}

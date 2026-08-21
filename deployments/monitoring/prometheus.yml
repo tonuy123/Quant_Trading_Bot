@@ -1,0 +1,28 @@
+# Prometheus configuration for Quant Trading Bot
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files: []
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'quant_trading_api'
+    static_configs:
+      - targets: ['api:8000']
+
+  - job_name: 'quant_trading_workers'
+    static_configs:
+      - targets:
+          - 'market_data_worker:8001'
+          - 'strategy_worker:8002'
+          - 'execution_worker:8003'

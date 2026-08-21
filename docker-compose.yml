@@ -1,0 +1,177 @@
+# =============================================================================
+# Docker Compose - Local Development Environment
+# =============================================================================
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: quant_trading_postgres
+    environment:
+      POSTGRES_DB: quant_trading
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env or environment}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - quant_network
+
+  # Redis Cache and Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: quant_trading_redis
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env or environment}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - quant_network
+
+  # Prometheus Metrics (optional)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: quant_trading_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deployments/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - quant_network
+    profiles:
+      - monitoring
+
+  # API Service
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: quant_trading_api
+    environment:
+      - APP_ENV=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env or environment}@postgres:5432/quant_trading
+      - DATABASE_URL_SYNC=postgresql://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env or environment}@postgres:5432/quant_trading
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env or environment}@redis:6379/0
+      - LOG_LEVEL=DEBUG
+      - EXCHANGE_MODE=fake
+      - PAPER_TRADING=true
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - quant_network
+    command: python -m uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Market Data Worker
+  market_data_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: quant_trading_market_data
+    environment:
+      - APP_ENV=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env or environment}@postgres:5432/quant_trading
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env or environment}@redis:6379/0
+      - LOG_LEVEL=DEBUG
+      - EXCHANGE_MODE=fake
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - quant_network
+    command: python -m apps.market_data_worker.main
+    profiles:
+      - workers
+
+  # Strategy Worker
+  strategy_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: quant_trading_strategy
+    environment:
+      - APP_ENV=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env or environment}@postgres:5432/quant_trading
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env or environment}@redis:6379/0
+      - LOG_LEVEL=DEBUG
+      - EXCHANGE_MODE=fake
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - quant_network
+    command: python -m apps.strategy_worker.main
+    profiles:
+      - workers
+
+  # Execution Worker
+  execution_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: quant_trading_execution
+    environment:
+      - APP_ENV=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env or environment}@postgres:5432/quant_trading
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env or environment}@redis:6379/0
+      - LOG_LEVEL=DEBUG
+      - EXCHANGE_MODE=fake
+      - PAPER_TRADING=true
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - quant_network
+    command: python -m apps.execution_worker.main
+    profiles:
+      - workers
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+
+networks:
+  quant_network:
+    driver: bridge
