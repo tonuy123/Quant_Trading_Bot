@@ -643,6 +643,72 @@ def _verify_opened_staging(
     return identity
 
 
+def _revalidate_owned_staging_pair(
+    layout: ResearchPublicationLayout,
+    plan: ResearchFilePlan,
+    pair: OwnedStagingPair,
+) -> _CoreInspection:
+    """JIT-revalidate an owned pair without changing C3B-2B state."""
+    if (
+        type(layout) is not ResearchPublicationLayout
+        or type(plan) is not ResearchFilePlan
+        or type(pair) is not OwnedStagingPair
+        or pair.closed
+    ):
+        raise _error("validate_input", "invalid_contract")
+
+    paths = _derive_paths(layout, plan)
+    if pair.paths != paths:
+        raise _error("validate_input", "invalid_contract")
+
+    inspected = _inspect_core(
+        layout,
+        paths,
+        operation="verify_staging",
+        baseline=None,
+    )
+    research_identity = _verify_opened_staging(
+        pair.research_stream,
+        path=paths.staging_research_path,
+        stage_parent_path=layout.staging_research_dir,
+        stage_parent_expected=inspected.staging_research_dir,
+        final_parent_path=layout.research_dir,
+        final_parent_expected=inspected.research_dir,
+    )
+    failure_identity = _verify_opened_staging(
+        pair.failure_stream,
+        path=paths.staging_failure_path,
+        stage_parent_path=layout.staging_failure_dir,
+        stage_parent_expected=inspected.staging_failure_dir,
+        final_parent_path=layout.failure_dir,
+        final_parent_expected=inspected.failure_dir,
+    )
+    if (
+        pair.research_identity is not None
+        and research_identity is not None
+        and pair.research_identity != research_identity
+    ) or (
+        pair.failure_identity is not None
+        and failure_identity is not None
+        and pair.failure_identity != failure_identity
+    ):
+        raise _error("verify_staging", "concurrent_change")
+
+    for target, parent in (
+        (layout.research_manifest_path, inspected.output_root),
+        (layout.staging_manifest_path, inspected.staging_dir),
+        (paths.research_path, inspected.research_dir),
+        (paths.failure_path, inspected.failure_dir),
+    ):
+        _require_target_absent(
+            target,
+            expected_parent=parent,
+            operation="verify_staging",
+            changed=True,
+        )
+    return inspected
+
+
 def _attempt_close_streams(streams: tuple[BinaryIO, ...]) -> bool:
     close_failed = False
     for stream in streams:

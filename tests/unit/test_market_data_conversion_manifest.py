@@ -9,6 +9,9 @@ import subprocess
 import sys
 from dataclasses import FrozenInstanceError, asdict, replace
 from datetime import UTC, datetime, timedelta, timezone
+from datetime import (
+    tzinfo as tzinfo_base,  # the ABC base class, NOT the getset_descriptor
+)
 from hashlib import sha256
 
 import pytest
@@ -1479,6 +1482,659 @@ class TestResearchFileArtifactExistingBehaviorUnchanged:
         assert exc_info.value.field == "report"
 
 
+# =============================================================================
+# _validate_raw_manifest — strict DownloadManifest regression tests
+# =============================================================================
+
+
+class _StrSubclass(str):
+    pass
+
+
+class _IntSubclass(int):
+    pass
+
+
+class _DatetimeSubclass(datetime):
+    pass
+
+
+def _make_output_file(
+    name: str = "BTC-USDT-1m.jsonl",
+    *,
+    records: object = 1,
+    range_start: object = START,
+    range_end: object = START + timedelta(minutes=1),
+) -> OutputFileInfo:
+    return OutputFileInfo(
+        name=name,
+        records=records,
+        range_start=range_start,
+        range_end=range_end,
+    )
+
+
+def _make_raw_manifest(**overrides: object) -> DownloadManifest:
+    files = overrides.pop("files", (_make_output_file(),))
+    record_count = overrides.pop(
+        "record_count",
+        sum(file_info.records for file_info in files),
+    )
+    # actual_start/actual_end must match file range boundaries for non-empty datasets.
+    if files:
+        first_range_start = files[0].range_start
+        last_range_end = files[-1].range_end
+    else:
+        first_range_start = None
+        last_range_end = None
+    values: dict[str, object] = {
+        "dataset_id": "raw-request-identity",
+        "dataset_version": DATASET_DOWNLOAD_VERSION,
+        "downloader_version": DOWNLOADER_VERSION,
+        "schema_version": 1,
+        "source": RESEARCH_SOURCE,
+        "exchange": "binance",
+        "market_type": "spot",
+        "symbols": ("BTC/USDT",),
+        "intervals": ("1m",),
+        "requested_start": START,
+        "requested_end": END,
+        "actual_start": first_range_start,
+        "actual_end": last_range_end,
+        "record_count": record_count,
+        "files": files,
+        "completion_status": "complete",
+        "failure": None,
+        "page_limit": 1000,
+        "resume": False,
+        "server_time": END,
+    }
+    values.update(overrides)
+    return DownloadManifest(**values)  # type: ignore[arg-type]
+
+
+# =============================================================================
+# actual_start / actual_end / server_time type/wrong-type rejection
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "value",
+    [object(), "2024-01-01T00:00:00Z", 123, True, False, [], {}],
+)
+def test_validator_rejects_wrong_type_actual_start(value: object) -> None:
+    raw = _make_raw_manifest(actual_start=value)
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "raw_manifest"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [object(), "2024-01-01T00:00:00Z", 123, True, False, [], {}],
+)
+def test_validator_rejects_wrong_type_actual_end(value: object) -> None:
+    raw = _make_raw_manifest(actual_end=value)
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "raw_manifest"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [object(), "2024-01-01T00:00:00Z", 123, True, False, [], {}],
+)
+def test_validator_rejects_wrong_type_server_time(value: object) -> None:
+    raw = _make_raw_manifest(server_time=value)
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "raw_manifest"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+def test_validator_rejects_naive_datetime_actual_start() -> None:
+    raw = _make_raw_manifest(actual_start=datetime(2024, 1, 1))
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "raw_manifest"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+def test_validator_rejects_datetime_subclass_actual_start() -> None:
+    raw = _make_raw_manifest(
+        actual_start=_DatetimeSubclass(2024, 1, 1, tzinfo=UTC),
+    )
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "raw_manifest"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+# =============================================================================
+# page_limit strict validation
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "value",
+    [True, False, 0, -1, 1001, 1.0, "1000", None],
+)
+def test_validator_rejects_page_limit_non_int(value: object) -> None:
+    raw = _make_raw_manifest(page_limit=value)  # type: ignore[arg-type]
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "raw_manifest"
+
+
+def test_validator_rejects_page_limit_int_subclass() -> None:
+    raw = _make_raw_manifest(page_limit=_IntSubclass(1000))
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "raw_manifest"
+
+
+# =============================================================================
+# resume strict validation
+# =============================================================================
+
+
+@pytest.mark.parametrize("value", [0, 1, "false", None, object()])
+def test_validator_rejects_resume_non_bool(value: object) -> None:
+    raw = _make_raw_manifest(resume=value)  # type: ignore[arg-type]
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "raw_manifest"
+
+
+def test_validator_rejects_resume_bool_subclass() -> None:
+    raw = _make_raw_manifest(resume=0)
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "raw_manifest"
+
+
+# =============================================================================
+# string field subclasses
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["dataset_id", "dataset_version", "downloader_version", "source", "exchange", "market_type"],
+)
+def test_validator_rejects_str_subclass_on_string_fields(field: str) -> None:
+    raw = _make_raw_manifest(**{field: _StrSubclass("binance")})
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "raw_manifest"
+
+
+# =============================================================================
+# symbol / interval subclasses
+# =============================================================================
+
+
+def test_validator_rejects_symbol_str_subclass() -> None:
+    raw = _make_raw_manifest(symbols=(_StrSubclass("BTC/USDT"),))
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "symbols"
+
+
+def test_validator_rejects_interval_str_subclass() -> None:
+    raw = _make_raw_manifest(intervals=(_StrSubclass("1m"),))
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "intervals"
+
+
+# =============================================================================
+# int field subclasses
+# =============================================================================
+
+
+def test_validator_rejects_schema_version_int_subclass() -> None:
+    raw = _make_raw_manifest(schema_version=_IntSubclass(1))
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "raw_manifest"
+
+
+def test_validator_rejects_record_count_int_subclass() -> None:
+    raw = _make_raw_manifest(record_count=_IntSubclass(1))
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "raw_manifest"
+
+
+# =============================================================================
+# OutputFileInfo subclass and nested field subclasses
+# =============================================================================
+
+
+class _OutputFileInfoSubclass(OutputFileInfo):
+    pass
+
+
+def test_validator_rejects_output_file_info_subclass() -> None:
+    raw_files = (
+        _OutputFileInfoSubclass(
+            name="BTC-USDT-1m.jsonl",
+            records=1,
+            range_start=START,
+            range_end=START + timedelta(minutes=1),
+        ),
+    )
+    raw = _make_raw_manifest(files=raw_files)
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "raw_manifest"
+
+
+def test_validator_rejects_output_file_records_int_subclass() -> None:
+    raw_files = (replace(_make_output_file(), records=_IntSubclass(1)),)
+    raw = _make_raw_manifest(files=raw_files)
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "raw_manifest"
+
+
+def test_validator_rejects_output_file_name_str_subclass() -> None:
+    raw_files = (replace(_make_output_file(), name=_StrSubclass("BTC-USDT-1m.jsonl")),)
+    raw = _make_raw_manifest(files=raw_files)
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    assert exc_info.value.field == "raw_manifest"
+
+
+# =============================================================================
+# valid canonical cases remain valid
+# =============================================================================
+
+
+def test_validator_accepts_empty_dataset_with_none_actual_start_end() -> None:
+    raw = _make_raw_manifest(files=(), record_count=0)
+    assert raw.files == ()
+
+    manifest = build_research_manifest(
+        raw,
+        raw_manifest_sha256="b" * 64,
+        files=[],
+        research_checksum=EMPTY_SHA256,
+        failure_checksum=EMPTY_SHA256,
+        max_line_bytes=1_048_576,
+        completion_status="complete",
+    )
+
+    assert manifest.files == ()
+
+
+def test_validator_accepts_non_empty_manifest_with_aware_datetimes() -> None:
+    raw = _make_raw_manifest(
+        actual_start=START,
+        actual_end=START + timedelta(minutes=1),
+        server_time=END,
+    )
+
+    manifest = build_research_manifest(
+        raw,
+        raw_manifest_sha256="b" * 64,
+        files=[make_artifact()],
+        research_checksum=AGGREGATE_RESEARCH_SHA256,
+        failure_checksum=EMPTY_SHA256,
+        max_line_bytes=1_048_576,
+        completion_status="complete",
+    )
+
+    assert len(manifest.files) == 1
+
+
+def test_validator_accepts_non_utc_offset_timezone() -> None:
+    plus_seven = timezone(timedelta(hours=7))
+    # Use UTC-equivalent boundaries so cross-field invariants pass.
+    utc_equivalent_start = datetime(2024, 1, 1, 7, 0, 0, tzinfo=plus_seven)  # = START in UTC
+    utc_equivalent_end = datetime(2024, 1, 1, 7, 1, 0, 0, tzinfo=plus_seven)  # = START+1min in UTC
+    raw = _make_raw_manifest(
+        actual_start=utc_equivalent_start,
+        actual_end=utc_equivalent_end,
+        server_time=datetime(2024, 1, 2, tzinfo=plus_seven),
+        files=(
+            _make_output_file(
+                range_start=utc_equivalent_start,
+                range_end=utc_equivalent_end,
+            ),
+        ),
+    )
+
+    # Artifact coverage must match the UTC epoch milliseconds of the UTC-equivalent range.
+    utc_start_ms = int(utc_equivalent_start.timestamp() * 1000)
+    utc_end_ms = int(utc_equivalent_end.timestamp() * 1000)
+    artifact_report = make_report(
+        coverage_start_ms=utc_start_ms,
+        coverage_end_ms=utc_end_ms,
+    )
+    artifact = make_artifact(report=artifact_report)
+
+    manifest = build_research_manifest(
+        raw,
+        raw_manifest_sha256="b" * 64,
+        files=[artifact],
+        research_checksum=AGGREGATE_RESEARCH_SHA256,
+        failure_checksum=EMPTY_SHA256,
+        max_line_bytes=1_048_576,
+        completion_status="complete",
+    )
+
+    assert len(manifest.files) == 1
+    assert manifest.requested_start.tzinfo is UTC
+
+
+# =============================================================================
+# error sanitization and detachment
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        object(),
+        _StrSubclass("BTC/USDT"),
+        _DatetimeSubclass(2024, 1, 1, tzinfo=UTC),
+        _IntSubclass(1),
+        True,
+        False,
+    ],
+)
+def test_validator_errors_are_sanitized_and_detached(value: object) -> None:
+    raw = _make_raw_manifest(
+        actual_start=value,
+        actual_end=value,
+        server_time=value,
+    )
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    error = exc_info.value
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    rendered = f"{error!s}\n{error!r}\n{vars(error)!r}"
+    # No raw values or markers leak into error surface.
+    assert "object()" not in rendered
+    assert "StrSubclass" not in rendered
+    assert "DatetimeSubclass" not in rendered
+    assert "IntSubclass" not in rendered
+
+
+def test_validator_preserves_return_shape() -> None:
+    raw = _make_raw_manifest(files=(), record_count=0)
+
+    from packages.market_data.datasets.conversion_manifest import _validate_raw_manifest
+
+    result = _validate_raw_manifest(raw)
+
+    assert isinstance(result, tuple)
+    assert len(result) == 3
+    assert isinstance(result[0], datetime)
+    assert isinstance(result[1], datetime)
+    assert isinstance(result[2], tuple)
+
+
+def test_validator_does_not_mutate_manifest_objects() -> None:
+    raw = _make_raw_manifest()
+    before = asdict(raw)
+    files_before = asdict(raw.files[0])
+
+    try:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+    except ResearchManifestValidationError:
+        pass
+
+    assert asdict(raw) == before
+    assert asdict(raw.files[0]) == files_before
+
+
+def test_validator_works_under_python_optimized_mode() -> None:
+    script = (
+        "from packages.market_data.datasets.conversion_manifest import "
+        "ResearchManifestValidationError, build_research_manifest\n"
+        "from packages.market_data.datasets.downloader import (\n"
+        "    DATASET_DOWNLOAD_VERSION, DOWNLOADER_VERSION, DownloadManifest\n"
+        ")\n"
+        "from packages.market_data.datasets.metadata import DATASET_SCHEMA_VERSION\n"
+        "from packages.market_data.datasets.research_format import RESEARCH_SOURCE\n"
+        "from datetime import UTC, datetime, timedelta\n"
+        "start = datetime(2024, 1, 1, tzinfo=UTC)\n"
+        "end = start + timedelta(days=1)\n"
+        "raw = DownloadManifest(\n"
+        "    dataset_id='id', dataset_version=DATASET_DOWNLOAD_VERSION,\n"
+        "    downloader_version=DOWNLOADER_VERSION,\n"
+        "    schema_version=DATASET_SCHEMA_VERSION,\n"
+        "    source=RESEARCH_SOURCE, exchange='binance', market_type='spot',\n"
+        "    symbols=('BTC/USDT',), intervals=('1m',),\n"
+        "    requested_start=start, requested_end=end,\n"
+        "    actual_start=object(), actual_end=object(),\n"
+        "    record_count=0, files=(), completion_status='complete',\n"
+        "    failure=None, page_limit=True, resume='false', server_time=object(),\n"
+        ")\n"
+        "try:\n"
+        "    build_research_manifest(\n"
+        "        raw,\n"
+        "        raw_manifest_sha256='b' * 64,\n"
+        "        files=[],\n"
+        "        research_checksum='" + EMPTY_SHA256 + "',\n"
+        "        failure_checksum='" + EMPTY_SHA256 + "',\n"
+        "        max_line_bytes=1048576,\n"
+        "        completion_status='complete',\n"
+        "    )\n"
+        "    raise SystemExit(1)\n"
+        "except ResearchManifestValidationError as e:\n"
+        "    if e.__cause__ is None and e.__context__ is None:\n"
+        "        raise SystemExit(0)\n"
+        "    raise SystemExit(2)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-O", "-c", script],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 class TestResearchFilePlanLazyExport:
     """ResearchFilePlan is exported from datasets.__init__."""
 
@@ -1486,3 +2142,615 @@ class TestResearchFilePlanLazyExport:
         from packages.market_data.datasets import ResearchFilePlan
 
         assert ResearchFilePlan is not None
+
+
+# =============================================================================
+# C4A H1 second-repair mandatory regressions
+# Finding 1: required datetime normalization catches OverflowError/TypeError/ValueError
+# Finding 2: exact types precede all semantic operations
+# Finding 3: required datetimes reject datetime subclasses
+# =============================================================================
+
+
+# ---------- Finding 1: datetime subclasses bypass type() guards ----------
+# A datetime with a stateful or malformed tzinfo IS constructible — the tzinfo
+# raises only when its methods (utcoffset, astimezone) are called. A stateful tzinfo
+# can return timedelta(0) on the first utcoffset() call but raise ValueError on
+# astimezone(UTC). The exact-type preflight fires first; the single protected try
+# block catches any ValueError/OverflowError/TypeError from utcoffset or astimezone.
+
+
+# ---------- Finding 2: malicious str subclass overrides comparison ----------
+
+
+class _MaliciousStr(str):
+    """str subclass that raises on equality/inequality."""
+
+    def __eq__(self, other: object) -> bool:
+        raise ValueError("malicious eq")
+
+    def __ne__(self, other: object) -> bool:
+        raise ValueError("malicious ne")
+
+
+class _MaliciousStrMembership(str):
+    """str subclass that raises on __contains__."""
+
+    def __contains__(self, item: object) -> bool:
+        raise ValueError("malicious contains")
+
+
+def test_malicious_str_subclass_on_scalar_field_raises_detached() -> None:
+    raw = _make_raw_manifest(dataset_id=_MaliciousStr("binance"))
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    error = exc_info.value
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    rendered = f"{error!s}\n{error!r}\n{vars(error)!r}"
+    assert "malicious" not in rendered.lower()
+    assert "MaliciousStr" not in rendered
+
+
+def test_malicious_str_subclass_on_symbol_raises_detached() -> None:
+    raw = _make_raw_manifest(symbols=(_MaliciousStr("BTC/USDT"),))
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    error = exc_info.value
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+def test_malicious_str_subclass_on_filename_raises_detached() -> None:
+    raw_files = (
+        OutputFileInfo(
+            name=_MaliciousStr("BTC-USDT-1m.jsonl"),
+            records=1,
+            range_start=START,
+            range_end=START + timedelta(minutes=1),
+        ),
+    )
+    raw = _make_raw_manifest(files=raw_files)
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    error = exc_info.value
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    rendered = f"{error!s}\n{error!r}\n{vars(error)!r}"
+    assert "malicious" not in rendered.lower()
+
+
+# ---------- Finding 3: datetime subclass on required fields ----------
+
+
+def test_requested_start_datetime_subclass_rejected() -> None:
+    raw = _make_raw_manifest(
+        requested_start=_DatetimeSubclass(2024, 1, 1, tzinfo=UTC),
+    )
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    error = exc_info.value
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    rendered = f"{error!s}\n{error!r}\n{vars(error)!r}"
+    assert "DatetimeSubclass" not in rendered
+
+
+def test_requested_end_datetime_subclass_rejected() -> None:
+    raw = _make_raw_manifest(
+        requested_end=_DatetimeSubclass(2024, 1, 2, tzinfo=UTC),
+    )
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    error = exc_info.value
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    rendered = f"{error!s}\n{error!r}\n{vars(error)!r}"
+    assert "DatetimeSubclass" not in rendered
+
+
+# ---------- Stateful tzinfo normalization lifecycle ----------
+# datetime.astimezone() observes the source tzinfo after the explicit awareness
+# check.  Every counter below belongs to one tzinfo instance so tests cannot pass
+# because another field or test consumed a shared observation.
+
+
+_TZINFO_PRIVATE_MARKER = "C4A_H1_TIMEZONE_PRIVATE_MARKER_DO_NOT_LEAK"
+
+
+class _RaiseOnSecondObservationTzinfo(tzinfo_base):
+    """Return one valid offset, then fail during the same normalization lifecycle."""
+
+    __slots__ = ("observations",)
+
+    def __init__(self) -> None:
+        self.observations = 0
+
+    def utcoffset(self, dt: datetime | None) -> timedelta:
+        self.observations += 1
+        if self.observations == 1:
+            return timedelta(0)
+        raise ValueError(_TZINFO_PRIVATE_MARKER)
+
+    def tzname(self, dt: datetime | None) -> str:
+        return "raise-on-second-observation"
+
+    def dst(self, dt: datetime | None) -> timedelta:
+        return timedelta(0)
+
+
+@pytest.mark.parametrize("field", ["requested_start", "actual_start", "server_time"])
+def test_second_timezone_observation_failure_is_detached_and_sanitized(
+    field: str,
+) -> None:
+    observed_timezone = _RaiseOnSecondObservationTzinfo()
+    raw = _make_raw_manifest(**{field: datetime(2024, 1, 1, tzinfo=observed_timezone)})
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_manifest(raw_manifest=raw)
+
+    error = exc_info.value
+    rendered = f"{error!s}\n{error!r}\n{vars(error)!r}"
+    assert observed_timezone.observations == 2
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert _TZINFO_PRIVATE_MARKER not in rendered
+
+
+class _OffsetSequenceTzinfo(tzinfo_base):
+    """Return a private per-instance offset sequence for exact call accounting."""
+
+    __slots__ = ("_offsets", "observations")
+
+    def __init__(self, offsets: tuple[timedelta, ...]) -> None:
+        self._offsets = offsets
+        self.observations = 0
+
+    def utcoffset(self, dt: datetime | None) -> timedelta:
+        observation = self.observations
+        self.observations += 1
+        if observation >= len(self._offsets):
+            raise ValueError(_TZINFO_PRIVATE_MARKER)
+        return self._offsets[observation]
+
+    def tzname(self, dt: datetime | None) -> str:
+        return "offset-sequence"
+
+    def dst(self, dt: datetime | None) -> timedelta:
+        return timedelta(0)
+
+
+def test_per_instance_offset_sequences_reject_inconsistent_normalized_starts() -> None:
+    actual_timezone = _OffsetSequenceTzinfo((timedelta(0), timedelta(hours=1)))
+    file_timezone = _OffsetSequenceTzinfo((timedelta(0), timedelta(0)))
+    actual_start = datetime(2024, 1, 1, 1, tzinfo=actual_timezone)
+    file_start = datetime(2024, 1, 1, 1, tzinfo=file_timezone)
+    file_end = START + timedelta(hours=1, minutes=1)
+    raw = _make_raw_manifest(
+        actual_start=actual_start,
+        actual_end=file_end,
+        files=(
+            OutputFileInfo(
+                name="BTC-USDT-1m.jsonl",
+                records=1,
+                range_start=file_start,
+                range_end=file_end,
+            ),
+        ),
+        record_count=1,
+    )
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_manifest(raw_manifest=raw)
+
+    error = exc_info.value
+    rendered = f"{error!s}\n{error!r}\n{vars(error)!r}"
+    assert actual_timezone.observations == 2
+    assert file_timezone.observations == 2
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert _TZINFO_PRIVATE_MARKER not in rendered
+
+
+class _StableFixedOffsetTzinfo(tzinfo_base):
+    """Real custom fixed-offset timezone accepted by the normalization contract."""
+
+    __slots__ = ("_offset",)
+
+    def __init__(self, offset: timedelta) -> None:
+        self._offset = offset
+
+    def utcoffset(self, dt: datetime | None) -> timedelta:
+        return self._offset
+
+    def tzname(self, dt: datetime | None) -> str:
+        return "stable-fixed-offset"
+
+    def dst(self, dt: datetime | None) -> timedelta:
+        return timedelta(0)
+
+
+def test_stable_custom_fixed_offset_is_accepted_and_normalized_to_utc() -> None:
+    stable_timezone = _StableFixedOffsetTzinfo(timedelta(hours=5, minutes=30))
+    local_requested_start = datetime(2024, 1, 1, 5, 30, tzinfo=stable_timezone)
+    local_requested_end = datetime(2024, 1, 2, 5, 30, tzinfo=stable_timezone)
+    local_file_end = datetime(2024, 1, 1, 5, 31, tzinfo=stable_timezone)
+    raw = _make_raw_manifest(
+        requested_start=local_requested_start,
+        requested_end=local_requested_end,
+        actual_start=local_requested_start,
+        actual_end=local_file_end,
+        server_time=local_requested_end,
+        files=(
+            OutputFileInfo(
+                name="BTC-USDT-1m.jsonl",
+                records=1,
+                range_start=local_requested_start,
+                range_end=local_file_end,
+            ),
+        ),
+        record_count=1,
+    )
+
+    manifest = build_manifest(raw_manifest=raw)
+
+    assert type(stable_timezone) is _StableFixedOffsetTzinfo
+    assert isinstance(stable_timezone, tzinfo_base)
+    assert not isinstance(stable_timezone, timezone)
+    assert manifest.requested_start == START
+    assert manifest.requested_end == END
+    assert manifest.requested_start.tzinfo is UTC
+    assert manifest.requested_end.tzinfo is UTC
+
+
+class _FailAfterSingleNormalizationTzinfo(tzinfo_base):
+    """Allow two offset observations and expose any later re-observation."""
+
+    __slots__ = ("_offset", "observations")
+
+    def __init__(self, offset: timedelta) -> None:
+        self._offset = offset
+        self.observations = 0
+
+    def utcoffset(self, dt: datetime | None) -> timedelta:
+        self.observations += 1
+        if self.observations > 2:
+            raise ValueError(_TZINFO_PRIVATE_MARKER)
+        return self._offset
+
+    def tzname(self, dt: datetime | None) -> str:
+        return "fail-after-single-normalization"
+
+    def dst(self, dt: datetime | None) -> timedelta:
+        return timedelta(0)
+
+
+def test_cross_field_validation_performs_no_third_timezone_observation() -> None:
+    observed_timezones: list[_FailAfterSingleNormalizationTzinfo] = []
+
+    def guarded_datetime(*args: int) -> datetime:
+        observed_timezone = _FailAfterSingleNormalizationTzinfo(timedelta(hours=2))
+        observed_timezones.append(observed_timezone)
+        return datetime(*args, tzinfo=observed_timezone)
+
+    requested_start = guarded_datetime(2024, 1, 1, 2, 0)
+    requested_end = guarded_datetime(2024, 1, 2, 2, 0)
+    actual_start = guarded_datetime(2024, 1, 1, 2, 0)
+    actual_end = guarded_datetime(2024, 1, 1, 2, 1)
+    server_time = guarded_datetime(2024, 1, 2, 2, 0)
+    file_start = guarded_datetime(2024, 1, 1, 2, 0)
+    file_end = guarded_datetime(2024, 1, 1, 2, 1)
+    raw = _make_raw_manifest(
+        requested_start=requested_start,
+        requested_end=requested_end,
+        actual_start=actual_start,
+        actual_end=actual_end,
+        server_time=server_time,
+        files=(
+            OutputFileInfo(
+                name="BTC-USDT-1m.jsonl",
+                records=1,
+                range_start=file_start,
+                range_end=file_end,
+            ),
+        ),
+        record_count=1,
+    )
+
+    manifest = build_manifest(raw_manifest=raw)
+
+    assert manifest.requested_start == START
+    assert manifest.requested_end == END
+    assert len(observed_timezones) == 7
+    assert tuple(zone.observations for zone in observed_timezones) == (2,) * 7
+
+
+def test_file_range_start_datetime_subclass_rejected() -> None:
+    raw_files = (
+        OutputFileInfo(
+            name="BTC-USDT-1m.jsonl",
+            records=1,
+            range_start=_DatetimeSubclass(2024, 1, 1, tzinfo=UTC),
+            range_end=START + timedelta(minutes=1),
+        ),
+    )
+    raw = _make_raw_manifest(files=raw_files)
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    error = exc_info.value
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    rendered = f"{error!s}\n{error!r}\n{vars(error)!r}"
+    assert "DatetimeSubclass" not in rendered
+
+
+def test_file_range_end_datetime_subclass_rejected() -> None:
+    raw_files = (
+        OutputFileInfo(
+            name="BTC-USDT-1m.jsonl",
+            records=1,
+            range_start=START,
+            range_end=_DatetimeSubclass(2024, 1, 1, 0, 1, tzinfo=UTC),
+        ),
+    )
+    raw = _make_raw_manifest(files=raw_files)
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    error = exc_info.value
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    rendered = f"{error!s}\n{error!r}\n{vars(error)!r}"
+    assert "DatetimeSubclass" not in rendered
+
+
+# ---------- Malicious int subclass ----------
+
+
+class _MaliciousInt(int):
+    """int subclass that raises on comparison."""
+
+    def __lt__(self, other: object) -> bool:
+        raise ValueError("malicious lt")
+
+    def __le__(self, other: object) -> bool:
+        raise ValueError("malicious le")
+
+    def __gt__(self, other: object) -> bool:
+        raise ValueError("malicious gt")
+
+    def __ge__(self, other: object) -> bool:
+        raise ValueError("malicious ge")
+
+
+def test_malicious_int_subclass_on_records_raises_detached() -> None:
+    raw_files = (
+        OutputFileInfo(
+            name="BTC-USDT-1m.jsonl",
+            records=_MaliciousInt(1),
+            range_start=START,
+            range_end=START + timedelta(minutes=1),
+        ),
+    )
+    raw = _make_raw_manifest(files=raw_files, record_count=_MaliciousInt(1))
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    error = exc_info.value
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    rendered = f"{error!s}\n{error!r}\n{vars(error)!r}"
+    assert "malicious" not in rendered.lower()
+    assert "MaliciousInt" not in rendered
+
+
+# ---------- C4A mapping: validate_manifest operation ----------
+
+
+def test_c4a_validate_manifest_error_operation() -> None:
+    """C4A maps validator failure to operation=validate_manifest."""
+    raw = _make_raw_manifest(requested_start=_DatetimeSubclass(2024, 1, 1, tzinfo=UTC))
+
+    with pytest.raises(ResearchManifestValidationError) as exc_info:
+        build_research_manifest(
+            raw,
+            raw_manifest_sha256="b" * 64,
+            files=[],
+            research_checksum=EMPTY_SHA256,
+            failure_checksum=EMPTY_SHA256,
+            max_line_bytes=1_048_576,
+            completion_status="complete",
+        )
+
+    error = exc_info.value
+    assert error.field == "raw_manifest"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+# ---------- Canonical valid manifests remain accepted ----------
+
+
+def test_canonical_valid_manifest_accepted() -> None:
+    raw = _make_raw_manifest(
+        actual_start=START,
+        actual_end=START + timedelta(minutes=1),
+        server_time=END,
+    )
+
+    manifest = build_research_manifest(
+        raw,
+        raw_manifest_sha256="b" * 64,
+        files=[make_artifact()],
+        research_checksum="e" * 64,
+        failure_checksum=EMPTY_SHA256,
+        max_line_bytes=1_048_576,
+        completion_status="complete",
+    )
+
+    assert manifest is not None
+
+
+def test_non_utc_offset_valid_manifest_accepted() -> None:
+    plus_seven = timezone(timedelta(hours=7))
+    utc_equiv_start = datetime(2024, 1, 1, 7, 0, 0, tzinfo=plus_seven)
+    utc_equiv_end = datetime(2024, 1, 1, 7, 1, 0, tzinfo=plus_seven)
+    raw = _make_raw_manifest(
+        requested_start=utc_equiv_start,
+        requested_end=utc_equiv_end,
+        actual_start=utc_equiv_start,
+        actual_end=utc_equiv_end,
+        server_time=datetime(2024, 1, 2, tzinfo=plus_seven),
+        files=(
+            _make_output_file(
+                name="BTC-USDT-1m.jsonl",
+                range_start=utc_equiv_start,
+                range_end=utc_equiv_end,
+            ),
+        ),
+    )
+
+    manifest = build_research_manifest(
+        raw,
+        raw_manifest_sha256="b" * 64,
+        files=[make_artifact()],
+        research_checksum="e" * 64,
+        failure_checksum=EMPTY_SHA256,
+        max_line_bytes=1_048_576,
+        completion_status="complete",
+    )
+
+    assert manifest is not None
+    assert manifest.requested_start.tzinfo is UTC
+
+
+# ---------- python -O ----------
+
+
+def test_h1_fixes_work_under_optimized_mode() -> None:
+    script = (
+        "from packages.market_data.datasets.conversion_manifest import "
+        "ResearchManifestValidationError, build_research_manifest\n"
+        "from packages.market_data.datasets.downloader import (\n"
+        "    DATASET_DOWNLOAD_VERSION, DOWNLOADER_VERSION, DownloadManifest\n"
+        ")\n"
+        "from packages.market_data.datasets.metadata import DATASET_SCHEMA_VERSION\n"
+        "from packages.market_data.datasets.research_format import RESEARCH_SOURCE\n"
+        "from datetime import UTC, datetime, timedelta\n"
+        "start = datetime(2024, 1, 1, tzinfo=UTC)\n"
+        "end = start + timedelta(days=1)\n"
+        # datetime subclass on required field
+        "class _DT(datetime): pass\n"
+        "raw = DownloadManifest(\n"
+        "    dataset_id='id', dataset_version=DATASET_DOWNLOAD_VERSION,\n"
+        "    downloader_version=DOWNLOADER_VERSION,\n"
+        "    schema_version=DATASET_SCHEMA_VERSION,\n"
+        "    source=RESEARCH_SOURCE, exchange='binance', market_type='spot',\n"
+        "    symbols=('BTC/USDT',), intervals=('1m',),\n"
+        "    requested_start=_DT(2024, 1, 1, tzinfo=UTC),\n"
+        "    requested_end=end,\n"
+        "    actual_start=None, actual_end=None, record_count=0,\n"
+        "    files=(), completion_status='complete',\n"
+        "    failure=None, page_limit=1000, resume=False, server_time=end,\n"
+        ")\n"
+        "try:\n"
+        "    build_research_manifest(\n"
+        "        raw,\n"
+        "        raw_manifest_sha256='b' * 64,\n"
+        "        files=[],\n"
+        "        research_checksum='" + EMPTY_SHA256 + "',\n"
+        "        failure_checksum='" + EMPTY_SHA256 + "',\n"
+        "        max_line_bytes=1048576,\n"
+        "        completion_status='complete',\n"
+        "    )\n"
+        "    raise SystemExit(1)\n"
+        "except ResearchManifestValidationError as e:\n"
+        "    if e.__cause__ is None and e.__context__ is None:\n"
+        "        raise SystemExit(0)\n"
+        "    raise SystemExit(2)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-O", "-c", script],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

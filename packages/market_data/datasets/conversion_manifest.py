@@ -134,6 +134,29 @@ def _validation_error(field: str, reason: str) -> ResearchManifestValidationErro
     return ResearchManifestValidationError(field=field, reason=reason)
 
 
+def _require_exact_bool(value: object, *, field: str) -> bool:
+    """Reject int/str/object subclasses for bool fields."""
+    if type(value) is not bool:
+        raise _validation_error(field, "must be an exact boolean")
+    return value
+
+
+def _require_exact_string(value: object, *, field: str) -> str:
+    """Reject str subclasses for direct DownloadManifest string fields."""
+    if type(value) is not str:
+        raise _validation_error(field, "must be an exact string")
+    return value
+
+
+def _require_exact_non_negative_integer(value: object, *, field: str) -> int:
+    """Reject bool, int subclasses, and negative values."""
+    if type(value) is not int or isinstance(value, bool):
+        raise _validation_error(field, "must be an exact non-negative integer")
+    if value < 0:
+        raise _validation_error(field, "must be a non-negative integer")
+    return value
+
+
 def _require_string(value: object, *, field: str) -> str:
     if not isinstance(value, str):
         raise _validation_error(field, "must be a string")
@@ -249,22 +272,54 @@ def _supported_interval(value: object) -> str:
     return interval
 
 
-def _normalize_aware_datetime(value: object, *, field: str) -> datetime:
-    if not isinstance(value, datetime):
-        raise _validation_error(field, "must be an aware datetime")
+def _normalize_exact_aware_datetime(value: object, *, field: str) -> datetime:
+    """Normalize a required exact datetime to UTC. Rejects subclasses.
 
+    BLOCKER 2 fix: utcoffset() and astimezone() are in the same protected try so that
+    a stateful or malformed tzinfo whose utcoffset() succeeds but whose astimezone() raises
+    ValueError is caught by the same handler and sanitized to ResearchManifestValidationError
+    with detached __cause__/__context__.
+    """
+    if type(value) is not datetime:
+        raise _validation_error(field, "must be an exact datetime")
+
+    # Both utcoffset() and astimezone() must be protected — a stateful tzinfo can
+    # return timedelta(0) on the first call but raise ValueError on the second.
     normalized: datetime | None = None
     dependency_failed = False
     try:
-        if value.tzinfo is None or value.utcoffset() is None:
+        offset = value.utcoffset()
+        if offset is None:
             dependency_failed = True
         else:
             normalized = value.astimezone(UTC)
     except (OverflowError, TypeError, ValueError):
         dependency_failed = True
+
     if dependency_failed or normalized is None:
         raise _validation_error(field, "must be an aware datetime")
     return normalized
+
+
+def _normalize_optional_aware_datetime(value: object, *, field: str) -> datetime | None:
+    """Normalize an optional datetime: None stays None, exact aware datetime normalizes to UTC."""
+    if value is None:
+        return None
+    return _normalize_exact_aware_datetime(value, field=field)
+
+
+def _normalize_aware_datetime(value: object, *, field: str) -> datetime:
+    """Normalize any aware datetime (used by ResearchDatasetManifest and _parse_datetime)."""
+    return _normalize_exact_aware_datetime(value, field=field)
+
+
+def _validate_optional_aware_datetime(value: object, *, field: str) -> None:
+    """Validate optional datetime fields: only None or exact aware datetime."""
+    if value is None:
+        return
+    # Delegate to normalizer: rejects subclasses, catches OverflowError/TypeError/ValueError,
+    # normalizes to UTC, raises with detached __cause__/__context__.
+    _normalize_optional_aware_datetime(value, field=field)
 
 
 def _parse_datetime(value: object, *, field: str) -> datetime:
@@ -346,6 +401,8 @@ def _validate_symbols(value: object) -> tuple[str, ...]:
     if not symbols:
         raise _validation_error("symbols", "must be non-empty")
     for symbol in symbols:
+        if type(symbol) is not str:
+            raise _validation_error("symbols", "must be a tuple of exact strings")
         _canonical_symbol(symbol)
     if tuple(sorted(cast(tuple[str, ...], symbols))) != symbols or len(set(symbols)) != len(
         symbols
@@ -361,6 +418,8 @@ def _validate_intervals(value: object) -> tuple[str, ...]:
     if not intervals:
         raise _validation_error("intervals", "must be non-empty")
     for interval in intervals:
+        if type(interval) is not str:
+            raise _validation_error("intervals", "must be a tuple of exact strings")
         _supported_interval(interval)
     if tuple(sorted(cast(tuple[str, ...], intervals))) != intervals or len(set(intervals)) != len(
         intervals
@@ -995,6 +1054,101 @@ class ResearchDatasetManifest:
 def _validate_raw_manifest(
     raw_manifest: DownloadManifest,
 ) -> tuple[datetime, datetime, tuple[OutputFileInfo, ...]]:
+    # Strict outer contract: reject non-DownloadManifest objects and subclasses.
+    if type(raw_manifest) is not DownloadManifest:
+        raise _validation_error("raw_manifest", "must be a DownloadManifest")
+
+    # ============================================================
+    # STEP 1 — Exact type preflight: ALL scalar/nested fields
+    # before ANY semantic operation (comparison, truthiness, etc.)
+    # ============================================================
+
+    # Exact scalars first.
+    _require_exact_non_negative_integer(raw_manifest.schema_version, field="raw_manifest")
+    _require_exact_string(raw_manifest.dataset_id, field="raw_manifest")
+    _require_exact_string(raw_manifest.dataset_version, field="raw_manifest")
+    _require_exact_string(raw_manifest.downloader_version, field="raw_manifest")
+    _require_exact_string(raw_manifest.source, field="raw_manifest")
+    _require_exact_string(raw_manifest.exchange, field="raw_manifest")
+    _require_exact_string(raw_manifest.market_type, field="raw_manifest")
+    _require_exact_string(raw_manifest.completion_status, field="raw_manifest")
+    _require_exact_bool(raw_manifest.resume, field="raw_manifest")
+    _require_exact_non_negative_integer(raw_manifest.page_limit, field="raw_manifest")
+    _require_exact_non_negative_integer(raw_manifest.record_count, field="raw_manifest")
+
+    # Exact tuple preflight for symbols/intervals BEFORE canonical validators dispatch.
+    if type(raw_manifest.symbols) is not tuple:
+        raise _validation_error("symbols", "must be a tuple")
+    _symbols_tuple = cast(tuple[object, ...], raw_manifest.symbols)
+    for _sym in _symbols_tuple:
+        if type(_sym) is not str:
+            raise _validation_error("symbols", "must be a tuple of exact strings")
+
+    if type(raw_manifest.intervals) is not tuple:
+        raise _validation_error("intervals", "must be a tuple")
+    _intervals_tuple = cast(tuple[object, ...], raw_manifest.intervals)
+    for _iv in _intervals_tuple:
+        if type(_iv) is not str:
+            raise _validation_error("intervals", "must be a tuple of exact strings")
+
+    # Canonical validation: non-empty, exact str members, canonical form, sorted/deduplicated.
+    # BLOCKER 1 fix: call canonical validators so C4A maps invalid symbols/intervals
+    # to operation=validate_manifest.
+    symbols: tuple[str, ...] = _validate_symbols(raw_manifest.symbols)
+    intervals: tuple[str, ...] = _validate_intervals(raw_manifest.intervals)
+
+    # Exact required datetimes (Finding 3: reject datetime subclasses).
+    requested_start = _normalize_exact_aware_datetime(
+        raw_manifest.requested_start, field="raw_manifest"
+    )
+    requested_end = _normalize_exact_aware_datetime(
+        raw_manifest.requested_end, field="raw_manifest"
+    )
+
+    # Exact optional datetimes: normalize once, reuse cached values for all semantic checks.
+    # This is the only normalization pass — no re-observation of the same untrusted datetime.
+    actual_start: datetime | None = _normalize_optional_aware_datetime(
+        raw_manifest.actual_start, field="raw_manifest"
+    )
+    actual_end: datetime | None = _normalize_optional_aware_datetime(
+        raw_manifest.actual_end, field="raw_manifest"
+    )
+    _normalize_optional_aware_datetime(raw_manifest.server_time, field="raw_manifest")
+
+    # Exact tuple for files.
+    if type(raw_manifest.files) is not tuple:
+        raise _validation_error("raw_manifest", "files must be a tuple")
+    files = cast(tuple[object, ...], raw_manifest.files)
+
+    # Build allowed filenames from canonical symbol/interval members.
+    allowed_file_names = frozenset(_raw_output_name(sym, iv) for sym in symbols for iv in intervals)
+
+    # Nested OutputFileInfo with exact nested scalars.
+    validated_files: list[OutputFileInfo] = []
+    # BLOCKER 2 fix: normalize range datetimes once, reuse for all semantic checks.
+    # Avoids repeated utcoffset()/astimezone() on the same untrusted datetime.
+    normalized_file_ranges: list[tuple[datetime, datetime]] = []
+    for file_info in files:
+        if type(file_info) is not OutputFileInfo:
+            raise _validation_error("raw_manifest", "files must contain OutputFileInfo values")
+        typed_file = file_info
+        # Exact str name BEFORE safe_basename dispatches.
+        if type(typed_file.name) is not str:
+            raise _validation_error("raw_manifest", "file name must be an exact string")
+        _safe_basename(typed_file.name, field="raw_manifest")
+        # Exact int records BEFORE numeric comparison.
+        if type(typed_file.records) is not int or isinstance(typed_file.records, bool):
+            raise _validation_error("raw_manifest", "records must be an exact integer")
+        # Exact required datetimes for OutputFileInfo (Finding 3).
+        file_rs = _normalize_exact_aware_datetime(typed_file.range_start, field="raw_manifest")
+        file_re = _normalize_exact_aware_datetime(typed_file.range_end, field="raw_manifest")
+        validated_files.append(typed_file)
+        normalized_file_ranges.append((file_rs, file_re))
+
+    # ============================================================
+    # STEP 2 — Semantic operations: safe to use exact values now.
+    # ============================================================
+
     _require_non_empty_string(raw_manifest.dataset_id, field="raw_manifest")
     if raw_manifest.completion_status != "complete":
         raise _validation_error("raw_manifest", "must be complete")
@@ -1004,11 +1158,7 @@ def _validate_raw_manifest(
         raise _validation_error("raw_manifest", "must use the current raw dataset version")
     if raw_manifest.downloader_version != DOWNLOADER_VERSION:
         raise _validation_error("raw_manifest", "must use the current downloader version")
-    if (
-        isinstance(raw_manifest.schema_version, bool)
-        or not isinstance(raw_manifest.schema_version, int)
-        or raw_manifest.schema_version != DATASET_SCHEMA_VERSION
-    ):
+    if raw_manifest.schema_version != DATASET_SCHEMA_VERSION:
         raise _validation_error("raw_manifest", "must use the current raw schema version")
     if raw_manifest.source != SOURCE or raw_manifest.source != RESEARCH_SOURCE:
         raise _validation_error("raw_manifest", "must use the public research source")
@@ -1017,43 +1167,79 @@ def _validate_raw_manifest(
     if raw_manifest.market_type != "spot":
         raise _validation_error("raw_manifest", "must use spot market data")
 
-    symbols = _validate_symbols(raw_manifest.symbols)
-    intervals = _validate_intervals(raw_manifest.intervals)
-    allowed_file_names = frozenset(
-        _raw_output_name(symbol, interval) for symbol in symbols for interval in intervals
-    )
-    requested_start = _normalize_aware_datetime(raw_manifest.requested_start, field="raw_manifest")
-    requested_end = _normalize_aware_datetime(raw_manifest.requested_end, field="raw_manifest")
+    if not 1 <= raw_manifest.page_limit <= 1000:
+        raise _validation_error("raw_manifest", "must use a page_limit between 1 and 1000")
+    if raw_manifest.record_count < 0:
+        raise _validation_error("raw_manifest", "record_count must be a non-negative integer")
     if requested_end <= requested_start:
         raise _validation_error("raw_manifest", "requested range must be increasing")
 
-    if type(raw_manifest.files) is not tuple:
-        raise _validation_error("raw_manifest", "files must be a tuple")
-    files = cast(tuple[object, ...], raw_manifest.files)
-    validated_files: list[OutputFileInfo] = []
-    for file_info in files:
-        if type(file_info) is not OutputFileInfo:
-            raise _validation_error("raw_manifest", "files must contain OutputFileInfo values")
-        typed_file = file_info
-        _safe_basename(typed_file.name, field="raw_manifest")
-        if typed_file.name not in allowed_file_names:
+    for typed_file, (file_rs, file_re) in zip(validated_files, normalized_file_ranges, strict=True):
+        typed_name = typed_file.name
+        _safe_basename(typed_name, field="raw_manifest")
+        if typed_name not in allowed_file_names:
             raise _validation_error(
                 "raw_manifest",
                 "file names must match a requested symbol and interval",
             )
-        _require_non_negative_integer(typed_file.records, field="raw_manifest")
-        range_start = _normalize_aware_datetime(typed_file.range_start, field="raw_manifest")
-        range_end = _normalize_aware_datetime(typed_file.range_end, field="raw_manifest")
-        if range_end <= range_start:
+        if typed_file.records < 0:
+            raise _validation_error("raw_manifest", "records must be a non-negative integer")
+        if file_re <= file_rs:
             raise _validation_error("raw_manifest", "file ranges must be increasing")
-        validated_files.append(typed_file)
 
     names = tuple(file_info.name for file_info in validated_files)
     if names != tuple(sorted(names)) or len(set(names)) != len(names):
         raise _validation_error("raw_manifest", "file names must be sorted and unique")
-    record_count = _require_non_negative_integer(raw_manifest.record_count, field="raw_manifest")
+
+    record_count = raw_manifest.record_count
     if record_count != sum(file_info.records for file_info in validated_files):
         raise _validation_error("raw_manifest", "record_count must equal the file total")
+
+    # Cross-field invariants: file ranges within requested half-open range.
+    # Uses already-normalized ranges from step 1 — no repeated utcoffset()/astimezone() calls.
+    for _file_info, (file_range_start, file_range_end) in zip(
+        validated_files, normalized_file_ranges, strict=True
+    ):
+        if file_range_start < requested_start:
+            raise _validation_error(
+                "raw_manifest",
+                "file range_start must not be earlier than requested_start",
+            )
+        if file_range_end > requested_end:
+            raise _validation_error(
+                "raw_manifest",
+                "file range_end must not be later than requested_end",
+            )
+
+    # Cross-field invariants: actual coverage must match file boundaries.
+    # Uses cached normalized values — single normalization per original datetime field.
+    if not validated_files:
+        # Empty dataset: actual_start and actual_end must be None.
+        if actual_start is not None:
+            raise _validation_error("raw_manifest", "actual_start must be None for empty files")
+        if actual_end is not None:
+            raise _validation_error("raw_manifest", "actual_end must be None for empty files")
+    else:
+        # Non-empty dataset: actual_start and actual_end must be non-None.
+        if actual_start is None:
+            raise _validation_error(
+                "raw_manifest", "actual_start must be non-None for non-empty files"
+            )
+        if actual_end is None:
+            raise _validation_error(
+                "raw_manifest", "actual_end must be non-None for non-empty files"
+            )
+        # actual_start must equal the cached normalized first file range_start.
+        first_range_start = normalized_file_ranges[0][0]
+        if actual_start != first_range_start:
+            raise _validation_error(
+                "raw_manifest", "actual_start must equal the first file range_start"
+            )
+        # actual_end must equal the cached normalized last file range_end.
+        last_range_end = normalized_file_ranges[-1][1]
+        if actual_end != last_range_end:
+            raise _validation_error("raw_manifest", "actual_end must equal the last file range_end")
+
     return requested_start, requested_end, tuple(validated_files)
 
 
